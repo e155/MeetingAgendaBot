@@ -83,7 +83,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Cancel conversation ──────────────────────────────────
     if data == "cancel_conv":
-        await query.message.reply_text("❌ Отменено.")
+        # Clean up any tracked dialog messages
+        for key in ('dec_bot_msgs', 'pend_bot_msgs'):
+            for msg_id in context.chat_data.get(key, []):
+                try:
+                    await context.bot.delete_message(update.effective_chat.id, msg_id)
+                except Exception:
+                    pass
+            context.chat_data.pop(key, None)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         return ConversationHandler.END
 
     # ── Private chat menu shortcuts ──────────────────────────
@@ -217,16 +228,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_agenda_item_status(agenda_item_id, 'done')
 
         type_icon = "✅" if dec_type == "done" else "📌"
-        type_label = "Решение принято" if dec_type == "done" else "Добавлено в задачи"
+        type_label = "Decision made" if dec_type == "done" else "Added as task"
         resp_text = f"\n👤 {responsible}" if responsible else ""
-        todo_note = "\n_Задача добавлена в список_" if dec_type == "todo" else ""
+        todo_note = "\n_Task created_" if dec_type == "todo" else ""
 
+        # Delete all dialog messages (bot questions + organizer answers)
+        for msg_id in context.chat_data.get('dec_bot_msgs', []):
+            try:
+                await context.bot.delete_message(g_id, msg_id)
+            except Exception:
+                pass
+        context.chat_data.pop('dec_bot_msgs', None)
+
+        # Also delete the inline keyboard message (this callback's message)
         try:
-            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.delete()
         except Exception:
             pass
 
-        await query.message.reply_text(
+        # Post clean summary
+        await context.bot.send_message(
+            g_id,
             f"{type_icon} *{type_label}:*\n{dec_text}{resp_text}{todo_note}",
             parse_mode="Markdown"
         )

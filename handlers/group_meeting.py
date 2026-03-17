@@ -108,10 +108,12 @@ async def _advance(context, chat_id, meeting_id, close_status=None):
         cur = items[idx]
         set_agenda_item_status(cur['id'], close_status)
 
-    next_idx = idx + 1
-    if next_idx >= len(items):
+    # Find next item that is not done
+    active_after = [i for i, item in enumerate(items) if i > idx and item['status'] != 'done']
+    if not active_after:
         return False
 
+    next_idx = active_after[0]
     set_current_agenda_idx(meeting_id, next_idx)
     await _post_current_item(context, chat_id, meeting_id)
     return True
@@ -162,7 +164,7 @@ async def cmd_newmeeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         header += "_Повестка не сформирована. Участники могут добавить пункты через /agenda в ЛС с ботом._"
 
-    await update.message.reply_text(header, parse_mode="Markdown")
+    await context.bot.send_message(update.effective_chat.id, header, parse_mode="Markdown")
     await _delete_command(update)
 
     if items:
@@ -196,10 +198,27 @@ async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     idx = meeting.get('current_agenda_idx', 0)
-    total = len(items)
 
-    # Cycle: move to next, wrap around to 0 if at end
-    next_idx = (idx + 1) % total
+    # Only cycle through unresolved items (not done)
+    active = [i for i, item in enumerate(items) if item['status'] != 'done']
+
+    if not active:
+        await context.bot.send_message(
+            chat_id,
+            "✅ Все пункты повестки закрыты. Используйте /summary для завершения."
+        )
+        await _delete_command(update)
+        return
+
+    # Find next active item after current idx (cyclic)
+    next_idx = None
+    for i in active:
+        if i > idx:
+            next_idx = i
+            break
+    if next_idx is None:
+        next_idx = active[0]  # wrap around
+
     set_current_agenda_idx(meeting['id'], next_idx)
     await _post_current_item(context, chat_id, meeting['id'])
     await _delete_command(update)
@@ -231,11 +250,13 @@ async def cmd_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['dec_agenda_item'] = current_item
 
     item_hint = f" по пункту *«{current_item['title']}»*" if current_item else ""
-    await update.message.reply_text(
+    bot_msg = await context.bot.send_message(
+        update.effective_chat.id,
         f"✅ *Решение{item_hint}*\n\nВведите текст решения:",
         parse_mode="Markdown",
         reply_markup=cancel_kb()
     )
+    context.chat_data['dec_bot_msgs'] = [bot_msg.message_id]
     await _delete_command(update)
     return DEC_TEXT
 
@@ -251,11 +272,12 @@ async def dec_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.chat_data['dec_text'] = update.message.text.strip()
     await _delete_command(update)
-    await context.bot.send_message(
+    bot_msg = await context.bot.send_message(
         update.effective_chat.id,
         "Укажите ответственного (имя, @username или «-»):",
         reply_markup=cancel_kb()
     )
+    context.chat_data.setdefault('dec_bot_msgs', []).append(bot_msg.message_id)
     return DEC_RESP
 
 
@@ -273,11 +295,12 @@ async def dec_resp_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_item = context.chat_data.get('dec_agenda_item')
     item_id = current_item['id'] if current_item else 0
 
-    await context.bot.send_message(
+    bot_msg = await context.bot.send_message(
         update.effective_chat.id,
         "Как зафиксировать решение?",
         reply_markup=decision_type_kb(item_id)
     )
+    context.chat_data.setdefault('dec_bot_msgs', []).append(bot_msg.message_id)
     return ConversationHandler.END
 
 
@@ -300,12 +323,14 @@ async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['pend_agenda_item'] = current_item
 
     item_hint = f" *«{current_item['title']}»*" if current_item else ""
-    await update.message.reply_text(
+    bot_msg = await context.bot.send_message(
+        update.effective_chat.id,
         f"🔄 *Откладываем пункт{item_hint}*\n\n"
         f"Заметка — что осталось нерешённым (или «-»):",
         parse_mode="Markdown",
         reply_markup=cancel_kb()
     )
+    context.chat_data['pend_bot_msgs'] = [bot_msg.message_id]
     await _delete_command(update)
     return PEND_NOTE
 
@@ -320,10 +345,13 @@ async def pend_note_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
     context.chat_data['pend_note'] = None if text == '-' else text
-    await update.message.reply_text(
+    await _delete_command(update)
+    bot_msg = await context.bot.send_message(
+        update.effective_chat.id,
         "Ответственный за проработку (или «-»):",
         reply_markup=cancel_kb()
     )
+    context.chat_data.setdefault('pend_bot_msgs', []).append(bot_msg.message_id)
     return PEND_RESP
 
 
@@ -349,9 +377,19 @@ async def pend_resp_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     resp_text = f"\n👤 {responsible}" if responsible else ""
     note_text = f"\n📝 {cd['pend_note']}" if cd.get('pend_note') else ""
+    # Delete all dialog messages (bot questions + organizer answers)
+    for msg_id in context.chat_data.get('pend_bot_msgs', []):
+        try:
+            await context.bot.delete_message(group_id, msg_id)
+        except Exception:
+            pass
+    context.chat_data.pop('pend_bot_msgs', None)
+    await _delete_command(update)
+
+    # Post clean summary
     await context.bot.send_message(
         group_id,
-        f"🔄 *Отложено на следующий митинг:* {item_title}{note_text}{resp_text}",
+        f"🔄 *Отложено до следующего митинга:* {item_title}{note_text}{resp_text}",
         parse_mode="Markdown"
     )
 
