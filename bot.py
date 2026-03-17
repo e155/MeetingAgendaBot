@@ -7,6 +7,7 @@ from telegram.ext import (
 from config import BOT_TOKEN
 from database.db import init_db
 from handlers.start import cmd_start
+from handlers.backup import cmd_backup, cmd_restore, handle_restore_file, handle_restart_callback
 from handlers.agenda import cmd_agenda, ag_title, ag_details, cmd_shagenda, AG_TITLE, AG_DETAILS
 from handlers.tasks import (
     cmd_task, task_title_step, task_details_step, task_assignee_step, task_assignee_cb, task_deadline_step,
@@ -126,6 +127,10 @@ def main():
 
     # ── Simple commands ──────────────────────────────────────
     app.add_handler(CommandHandler("start", cmd_start, filters=PRIVATE_FILTER))
+    app.add_handler(CommandHandler("backup", cmd_backup, filters=PRIVATE_FILTER))
+    app.add_handler(CommandHandler("restore", cmd_restore, filters=PRIVATE_FILTER))
+    app.add_handler(MessageHandler(PRIVATE_FILTER & filters.Document.ALL, handle_restore_file))
+    app.add_handler(CallbackQueryHandler(handle_restart_callback, pattern="^restore_"))
     app.add_handler(CommandHandler("shagenda", cmd_shagenda, filters=PRIVATE_FILTER))
     app.add_handler(CommandHandler("tasks", cmd_tasks, filters=PRIVATE_FILTER))
     app.add_handler(CommandHandler("history", cmd_history, filters=PRIVATE_FILTER))

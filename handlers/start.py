@@ -17,20 +17,27 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     upsert_user(user.id, user.username or "", _name(user), GROUP_ID)
 
+    admin_cmds = ""
+    from config import ADMIN_IDS, BACKUP_OPERATOR
+    user_can_backup = BACKUP_OPERATOR == "all" or user.id in ADMIN_IDS
+    if user_can_backup:
+        admin_cmds = "\n\n*Администрирование:*\n• /backup — скачать резервную копию БД\n• /restore — восстановить БД из файла"
+
     await update.message.reply_text(
         f"👋 Привет, *{_name(user)}*!\n\n"
-        f"Личный диалог — для подготовки к митингу:\n"
+        f"*Личный диалог* — подготовка к митингу:\n"
         f"• /agenda — добавить пункт в повестку\n"
-        f"• /shagenda — посмотреть повестку\n"
-        f"• /task — создать задачу\n"
-        f"• /tasks — открытые задачи\n"
-        f"• /history — выполненные задачи\n\n"
-        f"В *группе* (во время митинга):\n"
-        f"• /newmeeting — начать митинг\n"
-        f"• /next — следующий пункт (циклически)\n"
-        f"• /decision — зафиксировать решение\n"
-        f"• /pending — отложить пункт\n"
-        f"• /summary — завершить митинг и получить протокол\n\n"
+        f"• /shagenda — посмотреть повестку и очередь\n"
+        f"• /task — создать задачу (4 шага)\n"
+        f"• /tasks — открытые задачи с кнопками\n"
+        f"• /history — последние 20 выполненных задач\n"
+        f"{admin_cmds}\n\n"
+        f"*В группе* — ведение митинга:\n"
+        f"• /newmeeting — начать митинг, опубликовать повестку\n"
+        f"• /next — следующий пункт (циклически, без закрытия)\n"
+        f"• /decision — зафиксировать решение → Done или ToDo\n"
+        f"• /pending — отложить пункт до следующего митинга\n"
+        f"• /summary — завершить митинг + PDF-протокол\n\n"
         f"{'✅ Группа подключена.' if GROUP_ID else '⚠️ GROUP_ID не настроен.'}",
         parse_mode="Markdown"
     )

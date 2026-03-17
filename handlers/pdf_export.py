@@ -1,3 +1,4 @@
+from config import PDF_TITLE
 import os
 import tempfile
 from datetime import datetime
@@ -87,7 +88,7 @@ def build_pdf(meeting, agenda, decisions, pending, open_tasks, output_path):
     story = []
 
     # ── Заголовок ────────────────────────────────────────────
-    story.append(Paragraph("Delphi IT Meeting Agenda", S['title']))
+    story.append(Paragraph(PDF_TITLE, S['title']))
     story.append(Spacer(1, 4))
     story.append(hr(bold=True))
 
@@ -209,7 +210,7 @@ async def send_pdf(context, chat_id, meeting, agenda, decisions, pending, open_t
         with open(tmp_path, 'rb') as f:
             await context.bot.send_document(
                 chat_id, document=f, filename=filename,
-                caption=f"Meeting agenda: {meeting['title']}"
+                caption=f"{PDF_TITLE}: {meeting['title']}"
             )
     except Exception as e:
         await context.bot.send_message(chat_id, f"Ошибка генерации PDF: {e}")
