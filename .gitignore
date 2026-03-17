@@ -1,0 +1,5 @@
+.env
+__pycache__/
+meetings.bak
+meetings.db
+meetings.dbsmaple

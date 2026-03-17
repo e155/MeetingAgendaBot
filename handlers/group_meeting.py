@@ -1,0 +1,429 @@
+"""
+Group chat handlers: /newmeeting, /next, /decision, /pending, /summary
+/decision, /pending, /next, /summary — only for the meeting organizer.
+"""
+from telegram import Update
+from telegram.ext import ContextTypes, ConversationHandler
+from database.db import (
+    get_active_meeting, create_meeting, get_meeting,
+    get_agenda, set_current_agenda_idx, set_agenda_item_status,
+    add_decision, add_pending, add_task, end_meeting,
+    get_decisions, get_open_tasks, get_pending, flush_pending_agenda,
+    get_unresolved_from_last_meeting, add_agenda_item
+)
+from keyboards import decision_type_kb, cancel_kb
+
+DEC_TEXT, DEC_RESP = range(30, 32)
+
+
+async def _delete_command(update):
+    """Silently delete the command message from the group."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass  # No permission or already deleted — ignore
+PEND_NOTE, PEND_RESP = range(32, 34)
+
+STATUS_ICON = {'pending': '⏳', 'discussing': '🔵', 'done': '✅', 'pending_next': '🔄'}
+
+
+def _name(user):
+    return user.full_name or user.username or f"id{user.id}"
+
+
+def _now_time():
+    from datetime import datetime
+    return datetime.now().strftime("%H:%M")
+
+
+def _now_date():
+    from datetime import datetime
+    return datetime.now().strftime("%d.%m.%Y")
+
+
+async def _check_organizer(update: Update) -> bool:
+    """Returns True if the user is the meeting organizer. Sends a warning otherwise."""
+    chat = update.effective_chat
+    user = update.effective_user
+    meeting = get_active_meeting(chat.id)
+
+    if not meeting:
+        await update.message.reply_text("⚠️ Нет активного митинга.")
+        return False
+
+    if meeting.get('organizer_id') != user.id:
+        organizer_id = meeting.get('organizer_id')
+        await update.message.reply_text(
+            f"⛔ Эта команда доступна только организатору митинга.",
+            parse_mode="Markdown"
+        )
+        return False
+
+    return True
+
+
+async def _post_current_item(context, chat_id, meeting_id):
+    """Post current agenda item card to the group chat."""
+    meeting = get_meeting(meeting_id)
+    items = get_agenda(meeting_id)
+    idx = meeting.get('current_agenda_idx', 0)
+    total = len(items)
+
+    if idx >= total:
+        await context.bot.send_message(
+            chat_id,
+            "📋 Все пункты повестки пройдены.\n"
+            "Используйте /summary для завершения митинга."
+        )
+        return
+
+    item = items[idx]
+    # Only set to 'discussing' if still 'pending' — don't overwrite done/pending_next
+    if item['status'] == 'pending':
+        set_agenda_item_status(item['id'], 'discussing')
+        item['status'] = 'discussing'
+
+    text = f"🔵 *Пункт {idx + 1}/{total}: {item['title']}*\n"
+    if item.get('details'):
+        text += f"_{item['details']}_\n"
+    if item.get('added_by_name'):
+        text += f"👤 {item['added_by_name']}\n"
+    text += f"\n_/decision — решение  |  /pending — отложить  |  /next — следующий  |  /summary — завершить_"
+
+    await context.bot.send_message(chat_id, text, parse_mode="Markdown")
+
+
+async def _advance(context, chat_id, meeting_id, close_status=None):
+    """
+    Move index forward and post next item.
+    close_status: if set, updates current item status before advancing.
+    None = leave status unchanged (used by /next).
+    Returns True if advanced to next, False if no more items.
+    """
+    meeting = get_meeting(meeting_id)
+    items = get_agenda(meeting_id)
+    idx = meeting.get('current_agenda_idx', 0)
+
+    if idx < len(items) and close_status is not None:
+        cur = items[idx]
+        set_agenda_item_status(cur['id'], close_status)
+
+    next_idx = idx + 1
+    if next_idx >= len(items):
+        return False
+
+    set_current_agenda_idx(meeting_id, next_idx)
+    await _post_current_item(context, chat_id, meeting_id)
+    return True
+
+
+# ── /newmeeting ─────────────────────────────────────────────
+
+async def cmd_newmeeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("Эта команда работает только в группе.")
+        return
+
+    user = update.effective_user
+    group_id = chat.id
+    existing = get_active_meeting(group_id)
+    if existing:
+        await update.message.reply_text(
+            f"⚠️ Митинг *«{existing['title']}»* уже идёт.\n"
+            f"Завершите его через /summary.",
+            parse_mode="Markdown"
+        )
+        return
+
+    args = context.args
+    title = " ".join(args).strip() if args else f"Митинг {_now_date()}"
+    meeting_id = create_meeting(group_id, title, user.id)
+    flushed = flush_pending_agenda(group_id, meeting_id)
+
+    # Carry over unresolved items from previous meeting (skipped via /next, pending_next)
+    unresolved = get_unresolved_from_last_meeting(group_id)
+    carried = 0
+    for item in unresolved:
+        # Skip if same title already in queue (avoid duplicates from /pending)
+        existing = get_agenda(meeting_id)
+        if not any(i['title'] == item['title'] for i in existing):
+            add_agenda_item(meeting_id, item['title'], item.get('details'), item.get('added_by'))
+            carried += 1
+
+    items = get_agenda(meeting_id)
+
+    header = f"🟢 *Митинг начат: {title}*\n👤 Организатор: {_name(user)}\n\n"
+    if items:
+        header += "📋 *Повестка:*\n"
+        for i, item in enumerate(items, 1):
+            header += f"{i}. {item['title']}\n"
+        header += "\nНачинаем обсуждение 👇"
+    else:
+        header += "_Повестка не сформирована. Участники могут добавить пункты через /agenda в ЛС с ботом._"
+
+    await update.message.reply_text(header, parse_mode="Markdown")
+    await _delete_command(update)
+
+    if items:
+        set_current_agenda_idx(meeting_id, 0)
+        await _post_current_item(context, group_id, meeting_id)
+    else:
+        await update.message.reply_text(
+            "Добавьте пункты повестки через /agenda в личном диалоге с ботом.\n"
+            "Когда будете готовы начать обсуждение — напишите /next в группе."
+        )
+
+
+# ── /next ───────────────────────────────────────────────────
+
+async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+    if not await _check_organizer(update):
+        return
+
+    await _delete_command(update)
+    chat_id = update.effective_chat.id
+    meeting = get_active_meeting(chat_id)
+    items = get_agenda(meeting['id'])
+
+    if not items:
+        await context.bot.send_message(
+            chat_id,
+            "📋 Повестка пуста. Добавьте пункты через /agenda в личном диалоге с ботом."
+        )
+        return
+
+    idx = meeting.get('current_agenda_idx', 0)
+    total = len(items)
+
+    # Cycle: move to next, wrap around to 0 if at end
+    next_idx = (idx + 1) % total
+    set_current_agenda_idx(meeting['id'], next_idx)
+    await _post_current_item(context, chat_id, meeting['id'])
+    await _delete_command(update)
+
+
+# ── /decision ───────────────────────────────────────────────
+
+async def cmd_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"cmd_decision called: chat={update.effective_chat.id}, user={update.effective_user.id}")
+    if update.effective_chat.type not in ("group", "supergroup"):
+        logger.info("cmd_decision: not a group")
+        return ConversationHandler.END
+    if not await _check_organizer(update):
+        logger.info("cmd_decision: not organizer or no meeting")
+        return ConversationHandler.END
+    logger.info("cmd_decision: passed checks, entering conversation")
+
+    chat = update.effective_chat
+    meeting = get_active_meeting(chat.id)
+    items = get_agenda(meeting['id'])
+    idx = meeting.get('current_agenda_idx', 0)
+    current_item = items[idx] if items and idx < len(items) else None
+
+    context.chat_data['dec_meeting_id'] = meeting['id']
+    context.chat_data['dec_group_id'] = chat.id
+    context.chat_data['dec_user_id'] = update.effective_user.id
+    context.chat_data['dec_agenda_item'] = current_item
+
+    item_hint = f" по пункту *«{current_item['title']}»*" if current_item else ""
+    await update.message.reply_text(
+        f"✅ *Решение{item_hint}*\n\nВведите текст решения:",
+        parse_mode="Markdown",
+        reply_markup=cancel_kb()
+    )
+    await _delete_command(update)
+    return DEC_TEXT
+
+
+async def dec_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only organizer can continue the dialog they started
+    meeting_id = context.chat_data.get('dec_meeting_id')
+    if not meeting_id:
+        return ConversationHandler.END
+    meeting = get_meeting(meeting_id)
+    if meeting and meeting.get('organizer_id') != update.effective_user.id:
+        return DEC_TEXT  # ignore message, stay in state
+
+    context.chat_data['dec_text'] = update.message.text.strip()
+    await _delete_command(update)
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "Укажите ответственного (имя, @username или «-»):",
+        reply_markup=cancel_kb()
+    )
+    return DEC_RESP
+
+
+async def dec_resp_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    meeting_id = context.chat_data.get('dec_meeting_id')
+    if not meeting_id:
+        return ConversationHandler.END
+    meeting = get_meeting(meeting_id)
+    if meeting and meeting.get('organizer_id') != update.effective_user.id:
+        return DEC_RESP  # ignore, stay in state
+
+    text = update.message.text.strip()
+    context.chat_data['dec_responsible'] = None if text == '-' else text
+    await _delete_command(update)
+    current_item = context.chat_data.get('dec_agenda_item')
+    item_id = current_item['id'] if current_item else 0
+
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "Как зафиксировать решение?",
+        reply_markup=decision_type_kb(item_id)
+    )
+    return ConversationHandler.END
+
+
+# ── /pending ────────────────────────────────────────────────
+
+async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return ConversationHandler.END
+    if not await _check_organizer(update):
+        return ConversationHandler.END
+
+    chat = update.effective_chat
+    meeting = get_active_meeting(chat.id)
+    items = get_agenda(meeting['id'])
+    idx = meeting.get('current_agenda_idx', 0)
+    current_item = items[idx] if items and idx < len(items) else None
+
+    context.chat_data['pend_meeting_id'] = meeting['id']
+    context.chat_data['pend_group_id'] = chat.id
+    context.chat_data['pend_agenda_item'] = current_item
+
+    item_hint = f" *«{current_item['title']}»*" if current_item else ""
+    await update.message.reply_text(
+        f"🔄 *Откладываем пункт{item_hint}*\n\n"
+        f"Заметка — что осталось нерешённым (или «-»):",
+        parse_mode="Markdown",
+        reply_markup=cancel_kb()
+    )
+    await _delete_command(update)
+    return PEND_NOTE
+
+
+async def pend_note_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    meeting_id = context.chat_data.get('pend_meeting_id')
+    if not meeting_id:
+        return ConversationHandler.END
+    meeting = get_meeting(meeting_id)
+    if meeting and meeting.get('organizer_id') != update.effective_user.id:
+        return PEND_NOTE  # ignore
+
+    text = update.message.text.strip()
+    context.chat_data['pend_note'] = None if text == '-' else text
+    await update.message.reply_text(
+        "Ответственный за проработку (или «-»):",
+        reply_markup=cancel_kb()
+    )
+    return PEND_RESP
+
+
+async def pend_resp_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    meeting_id = context.chat_data.get('pend_meeting_id')
+    if not meeting_id:
+        return ConversationHandler.END
+    meeting = get_meeting(meeting_id)
+    if meeting and meeting.get('organizer_id') != update.effective_user.id:
+        return PEND_RESP  # ignore
+
+    text = update.message.text.strip()
+    responsible = None if text == '-' else text
+    cd = context.chat_data
+    group_id = cd['pend_group_id']
+    current_item = cd.get('pend_agenda_item')
+    item_id = current_item['id'] if current_item else None
+    item_title = current_item['title'] if current_item else '—'
+
+    add_pending(meeting_id, item_id, cd.get('pend_note'), responsible)
+    if item_id:
+        set_agenda_item_status(item_id, 'pending_next')
+
+    resp_text = f"\n👤 {responsible}" if responsible else ""
+    note_text = f"\n📝 {cd['pend_note']}" if cd.get('pend_note') else ""
+    await context.bot.send_message(
+        group_id,
+        f"🔄 *Отложено на следующий митинг:* {item_title}{note_text}{resp_text}",
+        parse_mode="Markdown"
+    )
+
+    has_next = await _advance(context, group_id, meeting_id, close_status='pending_next')
+    if not has_next:
+        await context.bot.send_message(
+            group_id,
+            "📋 Все пункты пройдены. Используйте /summary для завершения."
+        )
+    return ConversationHandler.END
+
+
+# ── /summary ────────────────────────────────────────────────
+
+async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+    if not await _check_organizer(update):
+        return
+
+    meeting = get_active_meeting(update.effective_chat.id)
+    await _do_summary(context, update.effective_chat.id, meeting['id'], update)
+
+
+async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
+    meeting = get_meeting(meeting_id)
+    agenda = get_agenda(meeting_id)
+    decisions = get_decisions(meeting_id)
+    pending = get_pending(meeting_id)
+    open_tasks = get_open_tasks(group_id)
+
+    end_meeting(meeting_id)
+
+    # Generate and send PDF
+    from handlers.pdf_export import send_pdf
+    await send_pdf(context, group_id, meeting, agenda, decisions, pending, open_tasks)
+
+    lines = [
+        f"🏁 *Итоги митинга: {meeting['title']}*",
+        f"🕐 {(meeting.get('started_at') or '')[:16]} → {_now_time()}",
+        ""
+    ]
+
+    lines.append("📋 *Повестка:*")
+    for i, item in enumerate(agenda, 1):
+        icon = STATUS_ICON.get(item['status'], '⏳')
+        lines.append(f"{icon} {i}. {item['title']}")
+    lines.append("")
+
+    if decisions:
+        lines.append("✅ *Решения:*")
+        for i, d in enumerate(decisions, 1):
+            icon = "✅" if d['decision_type'] == 'done' else "📌"
+            resp = f" — {d['responsible']}" if d.get('responsible') else ""
+            lines.append(f"{icon} {i}. {d['text']}{resp}")
+        lines.append("")
+
+    if pending:
+        lines.append("🔄 *Отложено на следующий митинг:*")
+        for p in pending:
+            resp = f" ({p['responsible']})" if p.get('responsible') else ""
+            note = f": {p['note']}" if p.get('note') else ""
+            lines.append(f"• {p.get('agenda_title') or '—'}{note}{resp}")
+        lines.append("")
+
+    if open_tasks:
+        lines.append("📌 *Открытые задачи:*")
+        for t in open_tasks:
+            assignee = t['assignee'] or '—'
+            deadline = t['deadline'] or '—'
+            lines.append(f"• {t['title']}\n  👤 {assignee}  📅 {deadline}")
+
+    await context.bot.send_message(group_id, "\n".join(lines), parse_mode="Markdown")
+    if update_to_delete:
+        await _delete_command(update_to_delete)

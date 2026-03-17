@@ -1,0 +1,241 @@
+from telegram import Update
+from telegram.ext import ContextTypes, ConversationHandler
+from database.db import (
+    complete_task, get_open_tasks, add_decision, add_task,
+    get_agenda, set_agenda_item_status, get_meeting
+)
+from handlers.start import get_user_group
+from handlers.tasks import start_reassign
+from keyboards import task_list_kb, confirm_close_kb
+
+
+from database.db import get_agenda, get_open_tasks, get_closed_tasks, get_active_meeting
+
+
+async def _inline_shagenda(query, group_id):
+    from database.db import get_active_meeting, get_agenda, get_pending_agenda
+    STATUS_ICON = {'pending': '⏳', 'discussing': '🔵', 'done': '✅', 'pending_next': '🔄'}
+    meeting = get_active_meeting(group_id)
+    queue = get_pending_agenda(group_id)
+    lines = []
+
+    if queue:
+        lines.append("📋 *В очереди (войдут в следующий митинг):*\n")
+        for i, item in enumerate(queue, 1):
+            lines.append(f"⏳ *{i}. {item['title']}*")
+            if item.get('details'):
+                lines.append(f"   _{item['details']}_")
+
+    if meeting:
+        items = get_agenda(meeting['id'])
+        if items:
+            if lines:
+                lines.append("")
+            lines.append(f"🔵 *Повестка митинга «{meeting['title']}»:*\n")
+            for i, item in enumerate(items, 1):
+                icon = STATUS_ICON.get(item['status'], '⏳')
+                suffix = " ← текущий" if item['status'] == 'discussing' and meeting.get('current_agenda_idx') == i - 1 else ""
+                lines.append(f"{icon} *{i}. {item['title']}*{suffix}")
+                if item.get('details'):
+                    lines.append(f"   _{item['details']}_")
+
+    if not lines:
+        await query.message.reply_text("📋 *Повестка пуста.* Добавьте /agenda", parse_mode="Markdown")
+        return
+    await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def _inline_tasks(query, group_id):
+    from database.db import get_open_tasks
+    from keyboards import task_list_kb, confirm_close_kb
+    tasks = get_open_tasks(group_id)
+    if not tasks:
+        await query.message.reply_text("📌 *Открытых задач нет.* Создайте /task", parse_mode="Markdown")
+        return
+    lines = ["📌 *Открытые задачи:*\n"]
+    for i, t in enumerate(tasks, 1):
+        assignee = t['assignee'] or '—'
+        deadline = t['deadline'] or '—'
+        lines.append(f"*{i}.* {t['title']}\n   👤 {assignee}  📅 {deadline}")
+    await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=task_list_kb(tasks))
+
+
+async def _inline_history(query, group_id):
+    from database.db import get_closed_tasks
+    tasks = get_closed_tasks(group_id)
+    if not tasks:
+        await query.message.reply_text("✅ Закрытых задач пока нет.")
+        return
+    lines = ["✅ *Выполненные задачи:*\n"]
+    for i, t in enumerate(tasks, 1):
+        assignee = t['assignee'] or '—'
+        closed = (t.get('closed_at') or '')[:10]
+        lines.append(f"*{i}.* {t['title']}\n   👤 {assignee}  ✓ {closed}")
+    await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = update.effective_user
+    chat = update.effective_chat
+
+    # ── Cancel conversation ──────────────────────────────────
+    if data == "cancel_conv":
+        await query.message.reply_text("❌ Отменено.")
+        return ConversationHandler.END
+
+    # ── Private chat menu shortcuts ──────────────────────────
+    # NB: update.message is None for callback queries — use query.message
+
+    if data == "show_agenda":
+        await _inline_shagenda(query, group_id)
+        return
+
+    if data == "show_tasks":
+        await _inline_tasks(query, group_id)
+        return
+
+    if data == "show_history":
+        await _inline_history(query, group_id)
+        return
+
+    if data == "cmd_agenda":
+        await query.message.reply_text(
+            "Используйте команду /agenda чтобы добавить пункт повестки."
+        )
+        return
+
+    if data == "cmd_newmeeting":
+        await query.message.reply_text(
+            "Команду /newmeeting нужно написать в группе, не здесь."
+        )
+        return
+
+    # ── Complete task (private) ──────────────────────────────
+    if data.startswith("done_task_"):
+        task_id = int(data.split("_")[-1])
+        from database.db import get_task
+        task = get_task(task_id)
+        title = task['title'][:40] if task else f"#{task_id}"
+        await query.message.reply_text(
+            f"❓ Закрыть задачу?\n<b>{title}</b>",
+            parse_mode="HTML",
+            reply_markup=confirm_close_kb(task_id)
+        )
+        return
+
+    if data.startswith("confirm_close_"):
+        task_id = int(data.split("_")[-1])
+        complete_task(task_id, closed_by=user.id)
+        group_id = await get_user_group(user.id)
+        tasks = get_open_tasks(group_id)
+        try:
+            await query.message.edit_text("✅ Задача закрыта!", reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    if data.startswith("cancel_close_"):
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+
+    # ── Reassign task (private) ──────────────────────────────
+    if data.startswith("reassign_task_"):
+        task_id = int(data.split("_")[-1])
+        return await start_reassign(update, context, task_id)
+
+    # ── Assignee picker (private task creation) ─────────────
+    if data.startswith("assignee_") and data != "assignee_skip":
+        # format: assignee_{user_id}_{name}
+        parts = data.split("_", 2)
+        assignee_name = parts[2] if len(parts) > 2 else "—"
+        context.user_data['task_assignee'] = assignee_name
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.message.reply_text(
+            f"👤 Ответственный: *{assignee_name}*\n\n*Шаг 4/4* — Укажите *срок выполнения*\n_(например: 25.12.2025 или «-»)_:",
+            parse_mode="Markdown",
+            reply_markup=__import__('keyboards').cancel_kb()
+        )
+        from handlers.tasks import TASK_DEADLINE
+        # Manually set conversation state via updating context
+        # PTB stores state in context — we need to return TASK_DEADLINE
+        # This is handled by making assignee_kb callbacks go through a ConversationHandler
+        return TASK_DEADLINE
+
+    if data == "assignee_skip":
+        context.user_data['task_assignee'] = None
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.message.reply_text(
+            "*Шаг 4/4* — Укажите *срок выполнения*\n_(например: 25.12.2025 или «-»)_:",
+            parse_mode="Markdown",
+            reply_markup=__import__('keyboards').cancel_kb()
+        )
+        from handlers.tasks import TASK_DEADLINE
+        return TASK_DEADLINE
+
+    # ── Decision type: Done / ToDo (group) ──────────────────
+    if data.startswith("dec_done_") or data.startswith("dec_todo_"):
+        dec_type = "done" if data.startswith("dec_done_") else "todo"
+        agenda_item_id = int(data.split("_")[-1]) or None
+
+        # State stored in chat_data (group conv) or user_data (private)
+        cd = context.chat_data
+        dec_text = cd.get('dec_text')
+        responsible = cd.get('dec_responsible')
+        meeting_id = cd.get('dec_meeting_id')
+        g_id = cd.get('dec_group_id')
+
+        if not dec_text or not meeting_id:
+            await query.message.reply_text("⚠️ Данные устарели. Начните /decision заново.")
+            return
+
+        add_decision(meeting_id, agenda_item_id, dec_text, responsible, dec_type, user.id)
+
+        if dec_type == "todo":
+            add_task(
+                group_id=g_id,
+                meeting_id=meeting_id,
+                title=dec_text,
+                details=None,
+                assignee=responsible,
+                deadline=None,
+                created_by=user.id
+            )
+
+        if agenda_item_id:
+            set_agenda_item_status(agenda_item_id, 'done')
+
+        type_icon = "✅" if dec_type == "done" else "📌"
+        type_label = "Решение принято" if dec_type == "done" else "Добавлено в задачи"
+        resp_text = f"\n👤 {responsible}" if responsible else ""
+        todo_note = "\n_Задача добавлена в список_" if dec_type == "todo" else ""
+
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        await query.message.reply_text(
+            f"{type_icon} *{type_label}:*\n{dec_text}{resp_text}{todo_note}",
+            parse_mode="Markdown"
+        )
+
+        # Auto-advance to next agenda item
+        from handlers.group_meeting import _advance
+        has_next = await _advance(context, g_id, meeting_id, close_status='done')
+        if not has_next:
+            await query.message.reply_text(
+                "📋 Все пункты пройдены. Используйте /summary для завершения."
+            )
+        return
