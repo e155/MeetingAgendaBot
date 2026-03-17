@@ -19,11 +19,11 @@ apt-get install -y fonts-dejavu-core
 ### 2. Файл `.env`
 
 ```env
-BOT_TOKEN=7009...          # токен от @BotFather
-GROUP_ID=-1003854554060    # ID группы (узнать: написать /chatid в группе)
-ADMIN_IDS=493216972        # user_id администраторов через запятую
+BOT_TOKEN=YOUR_BOT_TOKEN          # токен от @BotFather
+GROUP_ID=-1009999999999    # ID группы (узнать: написать /chatid в группе)
+ADMIN_IDS=123456789        # user_id администраторов через запятую
 BACKUP_OPERATOR=admin      # "admin" — только ADMIN_IDS, "all" — все пользователи
-PDF_TITLE=IT Meeting Agenda  # заголовок PDF-протокола
+PDF_TITLE=Delphi IT Meeting Agenda  # заголовок PDF-протокола
 ```
 
 ### 3. Права бота в группе
@@ -179,7 +179,15 @@ systemctl enable meeting-bot && systemctl start meeting-bot
 ## Зависимости
 
 ```
+anyio==4.12.1
+certifi==2026.2.25
+chardet==7.1.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.11
+pillow==12.1.1
+python-dotenv==1.2.2
 python-telegram-bot==21.6
 reportlab==4.1.0
-python-dotenv
 ```
