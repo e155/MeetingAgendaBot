@@ -1,4 +1,4 @@
-# Delphi IT Meeting Bot
+# Meeting Agenda Bot
 
 Telegram-бот для ведения митингов в корпоративных группах.  
 Все личные команды — в **ЛС с ботом**. В группу публикуются только повестка, решения и PDF-протокол.
@@ -23,7 +23,7 @@ BOT_TOKEN=YOUR_BOT_TOKEN          # токен от @BotFather
 GROUP_ID=-1009999999999    # ID группы (узнать: написать /chatid в группе)
 ADMIN_IDS=123456789        # user_id администраторов через запятую
 BACKUP_OPERATOR=admin      # "admin" — только ADMIN_IDS, "all" — все пользователи
-PDF_TITLE=Delphi IT Meeting Agenda  # заголовок PDF-протокола
+PDF_TITLE=Meeting Agenda  # заголовок PDF-протокола
 ```
 
 ### 3. Права бота в группе
