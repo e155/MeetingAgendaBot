@@ -17,7 +17,7 @@ from handlers.tasks import (
     REASSIGN_TITLE, REASSIGN_DETAILS, REASSIGN_ASSIGNEE, REASSIGN_DEADLINE
 )
 from handlers.group_meeting import (
-    cmd_newmeeting, cmd_next, cmd_decision, dec_text_step, dec_resp_step,
+    cmd_newmeeting, cmd_next, cmd_handover, cmd_decision, dec_text_step, dec_resp_step,
     cmd_pending, pend_note_step, pend_resp_step, cmd_summary,
     DEC_TEXT, DEC_RESP, PEND_NOTE, PEND_RESP
 )
@@ -138,6 +138,7 @@ def main():
     app.add_handler(CommandHandler("newmeeting", cmd_newmeeting, filters=GROUP_FILTER))
     app.add_handler(CommandHandler("next", cmd_next, filters=GROUP_FILTER))
     app.add_handler(CommandHandler("summary", cmd_summary, filters=GROUP_FILTER))
+    app.add_handler(CommandHandler("handover", cmd_handover, filters=GROUP_FILTER))
 
     # ── Conversation handlers ────────────────────────────────
     app.add_handler(agenda_conv)

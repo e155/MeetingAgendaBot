@@ -42,7 +42,8 @@ def _now_date():
 
 
 async def _check_organizer(update: Update) -> bool:
-    """Returns True if the user is the meeting organizer. Sends a warning otherwise."""
+    """Returns True if the user is the meeting organizer or a bot admin."""
+    from config import ADMIN_IDS
     chat = update.effective_chat
     user = update.effective_user
     meeting = get_active_meeting(chat.id)
@@ -51,11 +52,12 @@ async def _check_organizer(update: Update) -> bool:
         await update.message.reply_text("⚠️ Нет активного митинга.")
         return False
 
-    if meeting.get('organizer_id') != user.id:
-        organizer_id = meeting.get('organizer_id')
+    is_organizer = meeting.get('organizer_id') == user.id
+    is_admin = user.id in ADMIN_IDS
+
+    if not is_organizer and not is_admin:
         await update.message.reply_text(
-            f"⛔ Эта команда доступна только организатору митинга.",
-            parse_mode="Markdown"
+            "⛔ Эта команда доступна только организатору митинга или администратору бота."
         )
         return False
 
@@ -221,6 +223,64 @@ async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     set_current_agenda_idx(meeting['id'], next_idx)
     await _post_current_item(context, chat_id, meeting['id'])
+    await _delete_command(update)
+
+
+# ── /handover ───────────────────────────────────────────────
+
+async def cmd_handover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Transfer organizer role to another user. Only current organizer or admin."""
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+    if not await _check_organizer(update):
+        return
+
+    chat = update.effective_chat
+    meeting = get_active_meeting(chat.id)
+
+    # Parse @username or reply
+    target_user = None
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    elif context.args:
+        # Try to find user by username in DB
+        from database.db import get_conn
+        username = context.args[0].lstrip('@')
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT user_id, full_name, username FROM users WHERE username=? OR full_name=?",
+            (username, username)
+        ).fetchone()
+        conn.close()
+        if row:
+            class _U:
+                def __init__(self, r):
+                    self.id = r[0]; self.full_name = r[1]; self.username = r[2]
+            target_user = _U(row)
+
+    if not target_user:
+        await context.bot.send_message(
+            chat.id,
+            "⚠️ Укажите нового ведущего: ответьте на его сообщение или напишите /handover @username"
+        )
+        await _delete_command(update)
+        return
+
+    # Update organizer in DB
+    from database.db import get_conn
+    conn = get_conn()
+    conn.execute("UPDATE meetings SET organizer_id=? WHERE id=?", (target_user.id, meeting['id']))
+    conn.commit()
+    conn.close()
+
+    new_name = getattr(target_user, 'full_name', None) or getattr(target_user, 'username', f"id{target_user.id}")
+    old_name = _name(update.effective_user)
+
+    await context.bot.send_message(
+        chat.id,
+        f"🔄 Роль ведущего передана от *{old_name}* к *{new_name}*",
+        parse_mode="Markdown"
+    )
     await _delete_command(update)
 
 

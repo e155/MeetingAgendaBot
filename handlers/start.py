@@ -37,7 +37,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• /next — следующий пункт (циклически, без закрытия)\n"
         f"• /decision — зафиксировать решение → Done или ToDo\n"
         f"• /pending — отложить пункт до следующего митинга\n"
-        f"• /summary — завершить митинг + PDF-протокол\n\n"
+        f"• /summary — завершить митинг + PDF-протокол\n"        f"• /handover @username — передать роль ведущего\n\n"
         f"{'✅ Группа подключена.' if GROUP_ID else '⚠️ GROUP_ID не настроен.'}",
         parse_mode="Markdown"
     )
