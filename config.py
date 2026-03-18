@@ -22,3 +22,10 @@ BACKUP_OPERATOR = os.environ.get("BACKUP_OPERATOR", "admin").lower()
 
 # PDF report title
 PDF_TITLE = os.environ.get("PDF_TITLE", "Delphi IT Meeting Agenda")
+
+# ── Email report settings ────────────────────────────────────
+SENDMAIL  = os.environ.get("SENDMAIL", "false").lower() == "true"
+SMTP_HOST = os.environ.get("SMTP_HOST", "localhost")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "25"))
+SMTP_FROM = os.environ.get("SMTP_FROM", "meetingbot@localhost")
+SMTP_TO   = os.environ.get("SMTP_TO", "")  # comma-separated recipients

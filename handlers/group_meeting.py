@@ -483,9 +483,31 @@ async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
 
     end_meeting(meeting_id)
 
-    # Generate and send PDF
-    from handlers.pdf_export import send_pdf
-    await send_pdf(context, group_id, meeting, agenda, decisions, pending, open_tasks)
+    # Generate PDF and send to group
+    import tempfile, os
+    from handlers.pdf_export import build_pdf, send_pdf, REPORTLAB_OK
+    pdf_path = None
+    if REPORTLAB_OK:
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+            pdf_path = tmp.name
+        try:
+            build_pdf(meeting, agenda, decisions, pending, open_tasks, pdf_path)
+            safe = "".join(c for c in meeting['title'] if c.isalnum() or c in ' _-')[:30].strip()
+            filename = f"protocol_{safe}.pdf"
+            with open(pdf_path, 'rb') as f:
+                await context.bot.send_document(
+                    group_id, document=f, filename=filename,
+                    caption=f"Meeting agenda: {meeting['title']}"
+                )
+        except Exception as e:
+            await context.bot.send_message(group_id, f"PDF error: {e}")
+
+    # Send email report (non-blocking)
+    from handlers.email_report import send_email_report
+    await send_email_report(meeting, agenda, decisions, pending, open_tasks, pdf_path)
+
+    if pdf_path and os.path.exists(pdf_path):
+        os.unlink(pdf_path)
 
     lines = [
         f"🏁 *Итоги митинга: {meeting['title']}*",
