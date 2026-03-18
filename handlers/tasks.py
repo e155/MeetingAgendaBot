@@ -161,8 +161,9 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assignee = esc(t['assignee'] or '—')
         deadline = esc(t['deadline'] or '—')
         lines.append(f"<b>{i}. {esc(t['title'])}</b>")
-        if t.get('details'):
-            lines.append(f"   <i>{esc(t['details'])}</i>")
+        last = _last_detail(t.get('details'))
+        if last:
+            lines.append(f"   <i>{esc(last)}</i>")
         lines.append(f"   👤 {assignee}  📅 {deadline}")
         meta = []
         if t.get('created_by_name'):
@@ -328,10 +329,28 @@ async def reassign_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deadline = None if text == '-' else text
     ud = context.user_data
 
+    from database.db import get_task
+    from datetime import datetime
+    existing = get_task(ud['reassign_task_id'])
+    user = update.effective_user
+    author = user.full_name or user.username or f"id{user.id}"
+    new_details = ud.get('reassign_details')
+
+    # Append to history instead of overwriting
+    if new_details and new_details != '-':
+        timestamp = datetime.now().strftime('%d.%m.%Y %H:%M')
+        old_details = existing.get('details') or ''
+        if old_details:
+            combined = f"{old_details}\n--- {timestamp} ({author}) ---\n{new_details}"
+        else:
+            combined = new_details
+    else:
+        combined = existing.get('details')  # keep unchanged
+
     update_task(
         ud['reassign_task_id'],
         ud['reassign_title'],
-        ud.get('reassign_details'),
+        combined,
         ud['reassign_assignee'],
         deadline,
         updated_by=update.effective_user.id

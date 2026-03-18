@@ -17,14 +17,64 @@ except ImportError:
     REPORTLAB_OK = False
 
 # ── Register DejaVu fonts (cyrillic support) ───────────────
-FONTS_DIR = "/usr/share/fonts/truetype/dejavu"
 FONT_REGULAR = "DejaVuSans"
 FONT_BOLD    = "DejaVuSans-Bold"
 
-def _register_fonts():
+# Font search paths — system locations + project fonts/ dir
+_FONT_SEARCH = [
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu",
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "fonts"),
+]
+_FONT_URLS = {
+    "DejaVuSans.ttf":      "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf",
+    "DejaVuSans-Bold.ttf": "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf",
+}
+
+
+def _find_font(filename: str):
+    """Search for font file in known locations."""
+    for d in _FONT_SEARCH:
+        path = os.path.join(d, filename)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _download_fonts():
+    """Download DejaVu fonts to project fonts/ dir if not found on system."""
     try:
-        pdfmetrics.registerFont(TTFont(FONT_REGULAR, os.path.join(FONTS_DIR, "DejaVuSans.ttf")))
-        pdfmetrics.registerFont(TTFont(FONT_BOLD,    os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")))
+        import requests
+        fonts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fonts")
+        os.makedirs(fonts_dir, exist_ok=True)
+        for filename, url in _FONT_URLS.items():
+            dest = os.path.join(fonts_dir, filename)
+            if not os.path.isfile(dest):
+                r = requests.get(url, timeout=15)
+                r.raise_for_status()
+                with open(dest, "wb") as f:
+                    f.write(r.content)
+        return True
+    except Exception:
+        return False
+
+
+def _register_fonts():
+    """Register DejaVu fonts. Downloads them if not found locally."""
+    reg_path = _find_font("DejaVuSans.ttf")
+    bold_path = _find_font("DejaVuSans-Bold.ttf")
+
+    if not reg_path or not bold_path:
+        _download_fonts()
+        reg_path  = _find_font("DejaVuSans.ttf")
+        bold_path = _find_font("DejaVuSans-Bold.ttf")
+
+    if not reg_path or not bold_path:
+        return False
+
+    try:
+        pdfmetrics.registerFont(TTFont(FONT_REGULAR, reg_path))
+        pdfmetrics.registerFont(TTFont(FONT_BOLD,    bold_path))
         return True
     except Exception:
         return False
@@ -171,9 +221,26 @@ def build_pdf(meeting, agenda, decisions, pending, open_tasks, output_path):
             if t.get('updated_by_name'):
                 meta.append(f"edited by: {t['updated_by_name']}")
             meta_str = ', '.join(meta) if meta else '—'
+            # Format full details history for PDF
+            details_raw = t.get('details') or ''
+            if '\n--- ' in details_raw:
+                # Has history — format each entry
+                parts = details_raw.split('\n--- ')
+                details_lines = [parts[0]]
+                for part in parts[1:]:
+                    if '---\n' in part:
+                        sep, text = part.split('---\n', 1)
+                        details_lines.append(f'<font color="grey" size="7">— {sep} —</font>')
+                        details_lines.append(text.strip())
+                    else:
+                        details_lines.append(part)
+                details_pdf = '<br/>'.join(details_lines)
+            else:
+                details_pdf = details_raw
+
             rows.append([
                 Paragraph(str(i), S['normal']),
-                Paragraph(t['title'], S['normal']),
+                Paragraph(f"{t['title']}<br/><font size='8' color='grey'>{details_pdf}</font>" if details_pdf else t['title'], S['normal']),
                 Paragraph(t['assignee'] or '—', S['normal']),
                 Paragraph(t['deadline'] or '—', S['normal']),
                 Paragraph(meta_str, S['normal']),

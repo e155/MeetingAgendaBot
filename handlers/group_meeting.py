@@ -1,3 +1,4 @@
+import asyncio
 """
 Group chat handlers: /newmeeting, /next, /decision, /pending, /summary
 /decision, /pending, /next, /summary — only for the meeting organizer.
@@ -501,6 +502,8 @@ async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
                 )
         except Exception as e:
             await context.bot.send_message(group_id, f"PDF error: {e}")
+
+    await asyncio.sleep(1)
 
     # Send email report (non-blocking)
     from handlers.email_report import send_email_report
