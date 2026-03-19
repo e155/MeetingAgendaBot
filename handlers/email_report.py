@@ -10,6 +10,50 @@ from config import (
 )
 
 
+
+def _build_plain(meeting, agenda, decisions, pending, open_tasks):
+    """Plain text fallback for email clients that don't render HTML."""
+    STATUS_LABEL = {
+        'done': 'Closed', 'pending_next': 'Deferred',
+        'discussing': 'Discussed', 'pending': 'Not reviewed',
+    }
+    started = (meeting.get('started_at') or '')[:16]
+    ended   = (meeting.get('ended_at') or '')[:16]
+    lines = [
+        f"{PDF_TITLE}",
+        f"Topic: {meeting['title']}",
+        f"Start: {started}  End: {ended}",
+        "",
+        "=== AGENDA ===",
+    ]
+    for i, item in enumerate(agenda, 1):
+        status = STATUS_LABEL.get(item['status'], item['status'])
+        lines.append(f"{i}. {item['title']} [{status}]")
+        if item.get('details'):
+            lines.append(f"   {item['details']}")
+
+    if decisions:
+        lines += ["", "=== DECISIONS ==="]
+        for i, d in enumerate(decisions, 1):
+            kind = "Done" if d['decision_type'] == 'done' else "ToDo"
+            resp = d.get('responsible') or ''
+            lines.append(f"{i}. [{kind}] {d['text']}" + (f" — {resp}" if resp else ""))
+
+    if pending:
+        lines += ["", "=== DEFERRED ==="]
+        for p in pending:
+            lines.append(f"- {p.get('agenda_title') or '—'}: {p.get('note') or '—'}")
+
+    if open_tasks:
+        lines += ["", "=== OPEN TASKS ==="]
+        for i, t in enumerate(open_tasks, 1):
+            assignee = t.get('assignee') or '—'
+            deadline = t.get('deadline') or '—'
+            lines.append(f"{i}. {t['title']} | {assignee} | {deadline}")
+
+    return "\n".join(lines)
+
+
 def _build_html(meeting, agenda, decisions, pending, open_tasks):
     STATUS_LABEL = {
         'done': '✓ Closed', 'pending_next': '→ Deferred',
@@ -101,21 +145,34 @@ async def send_email_report(meeting, agenda, decisions, pending, open_tasks, pdf
         return
 
     try:
-        msg = MIMEMultipart('mixed')
-        msg['From']    = SMTP_FROM
-        msg['To']      = ', '.join(recipients)
-        msg['Date']    = formatdate(localtime=True)
-        msg['Subject'] = f"{PDF_TITLE}: {meeting['title']}"
-
         html = _build_html(meeting, agenda, decisions, pending, open_tasks)
-        msg.attach(MIMEText(html, 'html', 'utf-8'))
+        has_pdf = pdf_path and os.path.isfile(pdf_path)
 
-        # Attach PDF if provided
-        if pdf_path and os.path.isfile(pdf_path):
+        if has_pdf:
+            # With attachment: multipart/mixed → alternative + pdf
+            msg = MIMEMultipart('mixed')
+            msg['From']    = SMTP_FROM
+            msg['To']      = ', '.join(recipients)
+            msg['Date']    = formatdate(localtime=True)
+            msg['Subject'] = f"{PDF_TITLE}: {meeting['title']}"
+
+            alt = MIMEMultipart('alternative')
+            plain = _build_plain(meeting, agenda, decisions, pending, open_tasks)
+            alt.attach(MIMEText(plain, 'plain', 'utf-8'))
+            alt.attach(MIMEText(html, 'html', 'utf-8'))
+            msg.attach(alt)
+
             with open(pdf_path, 'rb') as f:
                 part = MIMEApplication(f.read(), Name=os.path.basename(pdf_path))
             part['Content-Disposition'] = f'attachment; filename="{os.path.basename(pdf_path)}"'
             msg.attach(part)
+        else:
+            # No attachment: send as simple HTML — Exchange handles better
+            msg = MIMEText(html, 'html', 'utf-8')
+            msg['From']    = SMTP_FROM
+            msg['To']      = ', '.join(recipients)
+            msg['Date']    = formatdate(localtime=True)
+            msg['Subject'] = f"{PDF_TITLE}: {meeting['title']}"
 
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
         server.sendmail(SMTP_FROM, recipients, msg.as_bytes())

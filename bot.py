@@ -30,7 +30,14 @@ logging.basicConfig(
 
 
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Отменено.")
+    if update.callback_query:
+        await update.callback_query.answer()
+        try:
+            await update.callback_query.message.delete()
+        except Exception:
+            pass
+    elif update.message:
+        await update.message.reply_text("❌ Отменено.")
     return ConversationHandler.END
 
 

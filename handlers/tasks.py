@@ -10,6 +10,17 @@ from keyboards import task_list_kb, cancel_kb, assignee_kb, name
 TASK_TITLE, TASK_DETAILS, TASK_ASSIGNEE, TASK_DEADLINE = range(4)
 REASSIGN_TITLE, REASSIGN_DETAILS, REASSIGN_ASSIGNEE, REASSIGN_DEADLINE = range(10, 14)
 
+def _last_detail(details):
+    """Return only the most recent entry from details history."""
+    if not details:
+        return None
+    parts = details.split('\n--- ')
+    last = parts[-1].strip()
+    if '---\n' in last:
+        last = last.split('---\n', 1)[-1].strip()
+    return last or None
+
+
 
 def _task_summary(t):
     assignee = t.get('assignee') or '—'

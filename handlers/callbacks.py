@@ -130,6 +130,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from database.db import get_task
         task = get_task(task_id)
         title = task['title'][:40] if task else f"#{task_id}"
+        # Save tasks list message_id so we can update it after close
+        context.user_data['tasks_msg_id'] = query.message.message_id
         await query.message.reply_text(
             f"❓ Закрыть задачу?\n<b>{title}</b>",
             parse_mode="HTML",
@@ -142,10 +144,51 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         complete_task(task_id, closed_by=user.id)
         group_id = await get_user_group(user.id)
         tasks = get_open_tasks(group_id)
+
+        # Delete confirmation message
         try:
-            await query.message.edit_text("✅ Задача закрыта!", reply_markup=None)
+            await query.message.delete()
         except Exception:
             pass
+
+        # Update original tasks list message
+        tasks_msg_id = context.user_data.pop('tasks_msg_id', None)
+        if tasks_msg_id:
+            if tasks:
+                def esc(text):
+                    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                lines = [f"📌 <b>Открытые задачи ({len(tasks)}):</b>\n"]
+                for i, t in enumerate(tasks, 1):
+                    assignee = esc(t['assignee'] or '—')
+                    deadline = esc(t['deadline'] or '—')
+                    lines.append(f"<b>{i}. {esc(t['title'])}</b>")
+                    from handlers.tasks import _last_detail
+                    last = _last_detail(t.get('details'))
+                    if last:
+                        lines.append(f"   <i>{esc(last)}</i>")
+                    lines.append(f"   👤 {assignee}  📅 {deadline}")
+                    lines.append("")
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=tasks_msg_id,
+                        text="\n".join(lines),
+                        parse_mode="HTML",
+                        reply_markup=task_list_kb(tasks)
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=tasks_msg_id,
+                        text="✅ <b>Все задачи закрыты!</b>",
+                        parse_mode="HTML",
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
         return
 
     if data.startswith("cancel_close_"):
