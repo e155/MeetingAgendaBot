@@ -41,7 +41,7 @@ python bot.py
 
 ```ini
 [Unit]
-Description=Delphi IT Meeting Bot
+Description=Meeting Bot
 After=network.target
 
 [Service]
@@ -189,7 +189,7 @@ systemctl enable meeting-bot && systemctl start meeting-bot
 | `GROUP_ID` | ID Telegram-группы | `0` |
 | `ADMIN_IDS` | user_id через запятую | — |
 | `BACKUP_OPERATOR` | `admin` или `all` | `admin` |
-| `PDF_TITLE` | Заголовок PDF-протокола | `Delphi IT Meeting Agenda` |
+| `PDF_TITLE` | Заголовок PDF-протокола | `Meeting Agenda` |
 
 ---
 
