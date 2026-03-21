@@ -171,7 +171,13 @@ async def cmd_newmeeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     items = get_agenda(meeting_id)
 
-    header = f"🟢 *Митинг начат: {title}*\n👤 Организатор: {_name(user)}\n\n"
+    organizer_mention = f"@{user.username}" if user.username else _name(user)
+    header = (
+        f"🟢 *Митинг начат: {title}*\n"
+        f"👤 Организатор: {_name(user)}\n\n"
+        f"_{organizer_mention} — вы организатор митинга, только вы можете управлять повесткой и вносить решения. "
+        f"Для передачи управления используйте /handover @username_\n\n"
+    )
     if items:
         header += "📋 *Повестка:*\n"
         for i, item in enumerate(items, 1):
@@ -271,6 +277,18 @@ async def cmd_handover(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 def __init__(self, r):
                     self.id = r[0]; self.full_name = r[1]; self.username = r[2]
             target_user = _U(row)
+        else:
+            # User not in local DB — try Telegram API lookup
+            try:
+                tg_chat = await context.bot.get_chat(f"@{username}")
+                class _U:
+                    def __init__(self, u):
+                        self.id = u.id
+                        self.full_name = u.full_name or u.first_name or username
+                        self.username = u.username or username
+                target_user = _U(tg_chat)
+            except Exception:
+                pass
 
     if not target_user:
         await context.bot.send_message(
