@@ -10,7 +10,7 @@ Telegram-бот для ведения митингов в корпоративн
 ### 1. Установка
 
 ```bash
-git clone <repo> && cd mbot5
+git clone <repo> && cd MeetingAgendaBot
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 apt-get install -y fonts-dejavu-core
