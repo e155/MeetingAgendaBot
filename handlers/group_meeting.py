@@ -14,7 +14,8 @@ from database.db import (
 )
 from keyboards import decision_type_kb, cancel_kb
 
-DEC_TEXT, DEC_RESP = range(30, 32)
+DEC_TEXT, DEC_RESP, DEC_TYPE = range(30, 33)
+PEND_NOTE, PEND_RESP = range(33, 35)
 
 
 async def _delete_command(update):
@@ -23,7 +24,6 @@ async def _delete_command(update):
         await update.message.delete()
     except Exception:
         pass  # No permission or already deleted — ignore
-PEND_NOTE, PEND_RESP = range(32, 34)
 
 STATUS_ICON = {'pending': '⏳', 'discussing': '🔵', 'done': '✅', 'pending_next': '🔄'}
 
@@ -143,6 +143,19 @@ async def cmd_newmeeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     title = " ".join(args).strip() if args else f"Митинг {_now_date()}"
+
+    # Auto-backup DB before creating meeting
+    try:
+        import shutil, os as _os
+        from config import DB_PATH
+        backup_dir = _os.path.join(_os.path.dirname(DB_PATH), "backups")
+        _os.makedirs(backup_dir, exist_ok=True)
+        from datetime import datetime as _dt
+        ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+        shutil.copy2(DB_PATH, _os.path.join(backup_dir, f"auto_{ts}.db"))
+    except Exception:
+        pass  # backup failure must never block the meeting
+
     meeting_id = create_meeting(group_id, title, user.id)
     flushed = flush_pending_agenda(group_id, meeting_id)
 
@@ -362,7 +375,77 @@ async def dec_resp_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=decision_type_kb(item_id)
     )
     context.chat_data.setdefault('dec_bot_msgs', []).append(bot_msg.message_id)
-    return ConversationHandler.END
+    return DEC_TYPE
+
+
+async def dec_type_callback(update, context):
+    """Handle Done/ToDo button press — final step of /decision conv."""
+    from telegram.ext import ConversationHandler as CH
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = update.effective_user
+
+    dec_type = "done" if data.startswith("dec_done_") else "todo"
+    agenda_item_id = int(data.split("_")[-1]) or None
+
+    cd = context.chat_data
+    dec_text = cd.get('dec_text')
+    responsible = cd.get('dec_responsible')
+    meeting_id = cd.get('dec_meeting_id')
+    g_id = cd.get('dec_group_id')
+
+    if not dec_text or not meeting_id:
+        await query.message.reply_text("⚠️ Данные устарели. Начните /decision заново.")
+        return CH.END
+
+    from database.db import add_decision, add_task, set_agenda_item_status, get_open_tasks
+    add_decision(meeting_id, agenda_item_id, dec_text, responsible, dec_type, user.id)
+
+    if dec_type == "todo":
+        add_task(
+            group_id=g_id,
+            meeting_id=meeting_id,
+            title=dec_text,
+            details=None,
+            assignee=responsible,
+            deadline=None,
+            created_by=user.id
+        )
+
+    if agenda_item_id:
+        set_agenda_item_status(agenda_item_id, 'done')
+
+    type_icon = "✅" if dec_type == "done" else "📌"
+    type_label = "Decision made" if dec_type == "done" else "Added as task"
+    resp_text = f"\n👤 {responsible}" if responsible else ""
+    todo_note = "\n_Task created_" if dec_type == "todo" else ""
+
+    for msg_id in context.chat_data.get('dec_bot_msgs', []):
+        try:
+            await context.bot.delete_message(g_id, msg_id)
+        except Exception:
+            pass
+    context.chat_data.pop('dec_bot_msgs', None)
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        g_id,
+        f"{type_icon} *{type_label}:*\n{dec_text}{resp_text}{todo_note}",
+        parse_mode="Markdown"
+    )
+
+    has_next = await _advance(context, g_id, meeting_id, close_status='done')
+    if not has_next:
+        await context.bot.send_message(
+            g_id,
+            "📋 Все пункты пройдены. Используйте /summary для завершения."
+        )
+    return CH.END
 
 
 # ── /pending ────────────────────────────────────────────────
@@ -518,6 +601,8 @@ async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
         ""
     ]
 
+    agenda_num_map = {item['id']: i for i, item in enumerate(agenda, 1)}
+
     lines.append("📋 *Повестка:*")
     for i, item in enumerate(agenda, 1):
         icon = STATUS_ICON.get(item['status'], '⏳')
@@ -526,10 +611,11 @@ async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
 
     if decisions:
         lines.append("✅ *Решения:*")
-        for i, d in enumerate(decisions, 1):
+        for d in decisions:
             icon = "✅" if d['decision_type'] == 'done' else "📌"
             resp = f" — {d['responsible']}" if d.get('responsible') else ""
-            lines.append(f"{icon} {i}. {d['text']}{resp}")
+            num = agenda_num_map.get(d.get('agenda_item_id'), '?')
+            lines.append(f"{icon} {num}. {d['text']}{resp}")
         lines.append("")
 
     if pending:
@@ -537,7 +623,8 @@ async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
         for p in pending:
             resp = f" ({p['responsible']})" if p.get('responsible') else ""
             note = f": {p['note']}" if p.get('note') else ""
-            lines.append(f"• {p.get('agenda_title') or '—'}{note}{resp}")
+            num = agenda_num_map.get(p.get('agenda_item_id'), '?')
+            lines.append(f"🔄 {num}. {p.get('agenda_title') or '—'}{note}{resp}")
         lines.append("")
 
     if open_tasks:
@@ -547,6 +634,11 @@ async def _do_summary(context, group_id, meeting_id, update_to_delete=None):
             deadline = t['deadline'] or '—'
             lines.append(f"• {t['title']}\n  👤 {assignee}  📅 {deadline}")
 
-    await context.bot.send_message(group_id, "\n".join(lines), parse_mode="Markdown")
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    bot_username = context.bot.username
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💬 Открыть бот", url=f"https://t.me/{bot_username}")
+    ]])
+    await context.bot.send_message(group_id, "\n".join(lines), parse_mode="Markdown", reply_markup=kb)
     if update_to_delete:
         await _delete_command(update_to_delete)

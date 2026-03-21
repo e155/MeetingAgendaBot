@@ -238,69 +238,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.tasks import TASK_DEADLINE
         return TASK_DEADLINE
 
-    # ── Decision type: Done / ToDo (group) ──────────────────
+    # dec_done_ / dec_todo_ are handled by decision_conv (DEC_TYPE state).
+    # This fallback fires only if the bot restarted and conversation state was lost.
     if data.startswith("dec_done_") or data.startswith("dec_todo_"):
-        dec_type = "done" if data.startswith("dec_done_") else "todo"
-        agenda_item_id = int(data.split("_")[-1]) or None
-
-        # State stored in chat_data (group conv) or user_data (private)
-        cd = context.chat_data
-        dec_text = cd.get('dec_text')
-        responsible = cd.get('dec_responsible')
-        meeting_id = cd.get('dec_meeting_id')
-        g_id = cd.get('dec_group_id')
-
-        if not dec_text or not meeting_id:
-            await query.message.reply_text("⚠️ Данные устарели. Начните /decision заново.")
-            return
-
-        add_decision(meeting_id, agenda_item_id, dec_text, responsible, dec_type, user.id)
-
-        if dec_type == "todo":
-            add_task(
-                group_id=g_id,
-                meeting_id=meeting_id,
-                title=dec_text,
-                details=None,
-                assignee=responsible,
-                deadline=None,
-                created_by=user.id
-            )
-
-        if agenda_item_id:
-            set_agenda_item_status(agenda_item_id, 'done')
-
-        type_icon = "✅" if dec_type == "done" else "📌"
-        type_label = "Decision made" if dec_type == "done" else "Added as task"
-        resp_text = f"\n👤 {responsible}" if responsible else ""
-        todo_note = "\n_Task created_" if dec_type == "todo" else ""
-
-        # Delete all dialog messages (bot questions + organizer answers)
-        for msg_id in context.chat_data.get('dec_bot_msgs', []):
-            try:
-                await context.bot.delete_message(g_id, msg_id)
-            except Exception:
-                pass
-        context.chat_data.pop('dec_bot_msgs', None)
-
-        # Also delete the inline keyboard message (this callback's message)
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-
-        # Post clean summary
-        await context.bot.send_message(
-            g_id,
-            f"{type_icon} *{type_label}:*\n{dec_text}{resp_text}{todo_note}",
-            parse_mode="Markdown"
-        )
-
-        # Auto-advance to next agenda item
-        from handlers.group_meeting import _advance
-        has_next = await _advance(context, g_id, meeting_id, close_status='done')
-        if not has_next:
-            await query.message.reply_text(
-                "📋 Все пункты пройдены. Используйте /summary для завершения."
-            )
+        await query.message.reply_text("⚠️ Данные устарели. Начните /decision заново.")
         return

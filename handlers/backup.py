@@ -54,23 +54,16 @@ async def cmd_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📂 Отправьте файл `.db` для восстановления базы данных.",
         parse_mode="Markdown"
     )
-    context.user_data['awaiting_restore'] = True
 
 
 async def handle_restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Step 1: receive file, save to staging, ask confirmation."""
-    if not context.user_data.get('awaiting_restore'):
-        return
-
     if not _can_use_backup(update.effective_user.id):
         return
 
     doc = update.message.document
     if not doc or not doc.file_name.endswith('.db'):
-        await update.message.reply_text("❌ Нужен файл с расширением `.db`.")
         return
-
-    context.user_data.pop('awaiting_restore', None)
 
     try:
         # Download directly to staging path on disk

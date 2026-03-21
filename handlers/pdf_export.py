@@ -173,16 +173,19 @@ def build_pdf(meeting, agenda, decisions, pending, open_tasks, output_path):
     else:
         story.append(Paragraph("No agenda items.", S['grey']))
 
+    agenda_num_map = {item['id']: i for i, item in enumerate(agenda, 1)}
+
     # ── 2. Решения ───────────────────────────────────────────
     story.append(Spacer(1, 8))
     story.append(hr())
     story.append(Paragraph("2. DECISIONS", S['h2']))
     if decisions:
-        for i, d in enumerate(decisions, 1):
+        for d in decisions:
             kind = "Done" if d['decision_type'] == 'done' else "ToDo (task)"
             resp = f"  |  Assignee: {d['responsible']}" if d.get('responsible') else ""
             ref  = f"  |  Agenda item: {d.get('agenda_title') or '—'}"
-            story.append(Paragraph(f"{i}. {d['text']}", S['bold']))
+            num  = agenda_num_map.get(d.get('agenda_item_id'), '?')
+            story.append(Paragraph(f"{num}. {d['text']}", S['bold']))
             story.append(Paragraph(f"{kind}{resp}{ref}", S['grey']))
             story.append(Spacer(1, 3))
     else:
@@ -196,7 +199,8 @@ def build_pdf(meeting, agenda, decisions, pending, open_tasks, output_path):
         for p in pending:
             resp = f"  |  Responsible: {p['responsible']}" if p.get('responsible') else ""
             note = f": {p['note']}" if p.get('note') else ""
-            story.append(Paragraph(f"• {p.get('agenda_title') or '—'}{note}", S['bold']))
+            num  = agenda_num_map.get(p.get('agenda_item_id'), '?')
+            story.append(Paragraph(f"{num}. {p.get('agenda_title') or '—'}{note}", S['bold']))
             if resp:
                 story.append(Paragraph(resp.strip(" |").strip(), S['grey']))
             story.append(Spacer(1, 3))

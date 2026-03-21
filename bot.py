@@ -18,8 +18,9 @@ from handlers.tasks import (
 )
 from handlers.group_meeting import (
     cmd_newmeeting, cmd_next, cmd_handover, cmd_decision, dec_text_step, dec_resp_step,
+    dec_type_callback,
     cmd_pending, pend_note_step, pend_resp_step, cmd_summary,
-    DEC_TEXT, DEC_RESP, PEND_NOTE, PEND_RESP
+    DEC_TEXT, DEC_RESP, DEC_TYPE, PEND_NOTE, PEND_RESP
 )
 from handlers.callbacks import callback_handler
 
@@ -110,6 +111,7 @@ def main():
         states={
             DEC_TEXT: [MessageHandler(GROUP_FILTER & filters.TEXT & ~filters.COMMAND, dec_text_step)],
             DEC_RESP: [MessageHandler(GROUP_FILTER & filters.TEXT & ~filters.COMMAND, dec_resp_step)],
+            DEC_TYPE: [CallbackQueryHandler(dec_type_callback, pattern="^dec_(done|todo)_")],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conv),
@@ -180,4 +182,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import asyncio
+    asyncio.set_event_loop(asyncio.new_event_loop())
     main()
